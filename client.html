@@ -317,26 +317,25 @@ p { margin: 0; color: white; }
     transform: translateX(-50%);
     display: flex;
     gap: 3px;
+    align-items: center;
     z-index: 1000;
 }
 .hotbar-slot {
-    width: 50px;
-    height: 50px;
-    top: 6px;
+    width: 54px;
+    height: 54px;
     background-color: rgba(30, 30, 30, 0.5);
+    border: 4px solid transparent;
     display: flex;
     justify-content: center;
     align-items: center;
     position: relative;
     cursor: none;
     box-sizing: border-box;
+    flex-shrink: 0;
 }
 .hotbar-slot.active {
-    width: 58px;
-    height: 59px;
-    top: 1px;
     background-color: rgba(60, 60, 60, 0.5);
-    border: 5px solid rgb(0, 162, 255);
+    border-color: rgb(0, 162, 255);
 }
 .hotbar-slot .key-number {
     position: absolute;
@@ -347,7 +346,7 @@ p { margin: 0; color: white; }
     color: #FFFFFF;
     pointer-events: none;
 }
-.hotbar-slot img.tool-icon { display: block; max-width: 80%; height: auto; box-sizing: border-box; }
+.hotbar-slot img.tool-icon { display: block; max-width: 80%; max-height: 80%; object-fit: contain; pointer-events: none; }
 #chatBubbleContainer { position: absolute; pointer-events: none; z-index: 2000; min-width: 80px; max-width: 250px; }
 .chatBubble {
     background-color: white;
@@ -821,7 +820,8 @@ const SPEED = 16.0;
 const ROTATION_SPEED = 0.2;
 const CHARACTER_HALF_WIDTH = 0.8;
 const CHARACTER_HEIGHT = 7;
-const WALK_ANIM_SPEED = 1.2;
+const WALK_CYCLE_SPEED = 10;
+const CHARACTER_SCALE = CHARACTER_HEIGHT / 5;
 const HOTBAR_SLOTS = 9;
 const FALL_DURATION = 7000;
 const RESPAWN_COOLDOWN = 5000;
@@ -836,7 +836,10 @@ const UP = new THREE.Vector3(0, 1, 0);
 const RIGHT = new THREE.Vector3(1, 0, 0);
 
 let scene, camera, renderer, character, characterModel, sun;
-let mixer;
+let characterParts = null;
+let animState = 'idle';
+let toolHeld = false;
+let animTime = 0;
 let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, jump = false;
 let isMovingHorizontally = false;
 let velocity = new THREE.Vector3();
@@ -860,7 +863,6 @@ let isRespawning = false;
 let fallStartTime = 0;
 let respawnStartTime = 0;
 let currentActionName = 'idle';
-let animationActions = {};
 let activeHotbarSlot = 0;
 let currentChatBubble = null;
 let audioContext;
@@ -886,7 +888,6 @@ let studTexture, bottomTexture;
 let maxAnisotropy = 1;
 let shadowTexelSize = (SHADOW_RANGE * 2) / 2048;
 let shadowCullTimer = 0;
-let toolTweenToken = 0;
 let gearObjects = {};
 let worldStarted = false;
 
@@ -1206,73 +1207,182 @@ function createBaseplate(targetScene) {
     baseplateCollider = new THREE.Box3().setFromObject(baseplate);
 }
 
-function loadCharacterModel() {
-    const loader = new THREE.GLTFLoader();
-    loader.load('r6_roblox_noob_animated.glb', function (gltf) {
-        characterModel = gltf.scene;
-        characterModel.scale.set(4, 4, 4);
-        characterModel.position.y = 0;
-        characterModel.rotation.y = Math.PI;
-        characterModel.visible = true;
-        character.add(characterModel);
+const CHARACTER_COLORS = { head: 0xF5CD30, torso: 0x0D69AC, arms: 0xF5CD30, legs: 0xA4BD47 };
 
-        mixer = new THREE.AnimationMixer(characterModel);
+function createFaceTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1024;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#F5CD30';
+    ctx.fillRect(0, 0, 1024, 256);
+    ctx.fillStyle = '#000000';
+    ctx.beginPath();
+    ctx.ellipse(467, 100, 11, 19, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(557, 100, 11, 19, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 9;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(512, 118, 62, Math.PI * 0.2, Math.PI * 0.8);
+    ctx.stroke();
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.anisotropy = maxAnisotropy;
+    return texture;
+}
 
-        const findClip = (test) => gltf.animations.find(clip => test(clip.name.toLowerCase()));
-        const idleClip = findClip(n => n.includes('idle'));
-        const walkClip = findClip(n => n.includes('run') || n.includes('walk'));
-        const jumpClip = findClip(n => n.includes('jump'));
-        const fallClip = findClip(n => n.includes('fall'));
-        const toolClip = findClip(n => n.includes('tool'));
+function buildCharacterModel() {
+    const root = new THREE.Group();
+    root.name = 'characterModel';
+    root.scale.setScalar(CHARACTER_SCALE);
+    const parts = {};
 
-        animationActions.idle = idleClip ? mixer.clipAction(idleClip) : null;
-        animationActions.walk = walkClip ? mixer.clipAction(walkClip) : null;
-        animationActions.jump = jumpClip ? mixer.clipAction(jumpClip) : null;
-        animationActions.fall = fallClip ? mixer.clipAction(fallClip) : null;
-        animationActions.tool = toolClip ? mixer.clipAction(toolClip) : null;
+    const makeMaterial = (color) => new THREE.MeshPhongMaterial({ color, specular: 0x1c1c1c, shininess: 25 });
 
-        Object.values(animationActions).forEach(action => {
-            if (action) {
-                action.setLoop(THREE.LoopRepeat);
-                action.setEffectiveWeight(0);
-                if (action === animationActions.walk) {
-                    action.setEffectiveTimeScale(WALK_ANIM_SPEED);
-                }
-            }
-        });
+    const makeJoint = (name, x, y) => {
+        const joint = new THREE.Group();
+        joint.name = name;
+        joint.position.set(x, y, 0);
+        root.add(joint);
+        parts[name] = joint;
+        return joint;
+    };
 
-        ['jump', 'fall', 'tool'].forEach(key => {
-            if (animationActions[key]) {
-                animationActions[key].setLoop(THREE.LoopOnce);
-                animationActions[key].clampWhenFinished = true;
-            }
-        });
+    const makeBox = (name, width, height, depth, color, offsetY, parent) => {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), makeMaterial(color));
+        mesh.name = name;
+        mesh.position.y = offsetY;
+        mesh.castShadow = true;
+        mesh.receiveShadow = false;
+        parent.add(mesh);
+        parts[name] = mesh;
+        return mesh;
+    };
 
-        if (animationActions.idle) {
-            animationActions.idle.setEffectiveWeight(1);
-            animationActions.idle.play();
-        }
-        currentActionName = 'idle';
+    makeBox('torso', 2, 2, 1, CHARACTER_COLORS.torso, 3, root);
+    makeBox('rightArm', 1, 2, 1, CHARACTER_COLORS.arms, -1, makeJoint('rightArmJoint', 1.5, 4));
+    makeBox('leftArm', 1, 2, 1, CHARACTER_COLORS.arms, -1, makeJoint('leftArmJoint', -1.5, 4));
+    makeBox('rightLeg', 1, 2, 1, CHARACTER_COLORS.legs, -1, makeJoint('rightLegJoint', 0.5, 2));
+    makeBox('leftLeg', 1, 2, 1, CHARACTER_COLORS.legs, -1, makeJoint('leftLegJoint', -0.5, 2));
 
-        characterModel.traverse(node => {
-            if (node.isMesh) {
-                node.castShadow = true;
-                node.receiveShadow = false;
-                if (node.material) {
-                    node.material = node.material.clone();
-                    if (node.material.emissive) {
-                        node.material.emissive.set(0x2a2a2a);
-                        node.material.emissiveIntensity = 0.4;
-                    }
-                    if (node.material.map) node.material.map.anisotropy = maxAnisotropy;
-                    node.material.needsUpdate = true;
-                }
-            }
-        });
-        cameraOffset.set(0, 15, 0);
-        updateCameraPosition();
-        updateHotbarUI();
+    const headJoint = makeJoint('headJoint', 0, 4);
+    const faceMaterial = new THREE.MeshPhongMaterial({ map: createFaceTexture(), specular: 0x1c1c1c, shininess: 25 });
+    const head = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.6, 0.625, 1, 32, 1),
+        [faceMaterial, makeMaterial(CHARACTER_COLORS.head), makeMaterial(CHARACTER_COLORS.head)]
+    );
+    head.name = 'head';
+    head.position.y = 0.5;
+    head.castShadow = true;
+    head.receiveShadow = false;
+    headJoint.add(head);
+    parts.head = head;
+
+    return { root, parts };
+}
+
+function setCharacterPartColor(partName, color) {
+    if (!characterParts) return;
+    const mesh = characterParts[partName];
+    if (!mesh || !mesh.isMesh) return;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    materials.forEach(material => {
+        if (!material.map) material.color.set(color);
     });
+}
+
+function setCharacterPartFace(partName, faceIndex, texture) {
+    if (!characterParts) return;
+    const mesh = characterParts[partName];
+    if (!mesh || !mesh.isMesh) return;
+    if (!Array.isArray(mesh.material)) {
+        const base = mesh.material;
+        mesh.material = [0, 1, 2, 3, 4, 5].map(() => base.clone());
+    }
+    const material = mesh.material[faceIndex];
+    if (!material) return;
+    material.map = texture;
+    material.color.set(0xffffff);
+    material.needsUpdate = true;
+}
+
+function setCharacterFaceTexture(texture) {
+    if (!characterParts || !characterParts.head) return;
+    const material = characterParts.head.material[0];
+    material.map = texture;
+    material.needsUpdate = true;
+}
+
+function loadCharacterModel() {
+    const built = buildCharacterModel();
+    characterModel = built.root;
+    characterParts = built.parts;
+    characterModel.visible = true;
+    character.add(characterModel);
+    animState = 'idle';
+    currentActionName = 'idle';
+    cameraOffset.set(0, 15, 0);
+    updateCameraPosition();
+    updateHotbarUI();
+}
+
+function dampValue(current, target, k) {
+    return current + (target - current) * k;
+}
+
+function updateCharacterAnimation(delta) {
+    const p = characterParts;
+    if (!p) return;
+    animTime += delta;
+
+    let rArmX = 0, lArmX = 0, rArmZ = 0.04, lArmZ = -0.04;
+    let rLegX = 0, lLegX = 0, rLegZ = 0, lLegZ = 0;
+
+    if (animState === 'walk') {
+        const s = Math.sin(animTime * WALK_CYCLE_SPEED);
+        rLegX = s * 0.95;
+        lLegX = -s * 0.95;
+        rArmX = -s * 0.95;
+        lArmX = s * 0.95;
+    } else if (animState === 'jump') {
+        rArmZ = 2.6;
+        lArmZ = -2.6;
+        rLegX = 0.1;
+        lLegX = -0.1;
+    } else if (animState === 'fall') {
+        rArmZ = 1.7;
+        lArmZ = -1.7;
+        rLegX = 0.1;
+        lLegX = -0.2;
+        rLegZ = 0.15;
+        lLegZ = -0.15;
+    } else {
+        const breathe = Math.sin(animTime * 1.8) * 0.03;
+        rArmZ += breathe;
+        lArmZ -= breathe;
+    }
+
+    if (toolHeld) {
+        rArmX = Math.PI / 2;
+        rArmZ = 0;
+    }
+
+    const k = 1 - Math.exp(-delta * 18);
+    const ra = p.rightArmJoint.rotation;
+    const la = p.leftArmJoint.rotation;
+    const rl = p.rightLegJoint.rotation;
+    const ll = p.leftLegJoint.rotation;
+    ra.x = dampValue(ra.x, rArmX, k);
+    ra.z = dampValue(ra.z, rArmZ, k);
+    la.x = dampValue(la.x, lArmX, k);
+    la.z = dampValue(la.z, lArmZ, k);
+    rl.x = dampValue(rl.x, rLegX, k);
+    rl.z = dampValue(rl.z, rLegZ, k);
+    ll.x = dampValue(ll.x, lLegX, k);
+    ll.z = dampValue(ll.z, lLegZ, k);
 }
 
 function loadGears() {
@@ -1282,7 +1392,7 @@ function loadGears() {
             const gear = gltf.scene;
             gear.name = def.name;
             gear.scale.setScalar(def.scale);
-            gear.position.set(1.8, 4.7, -2);
+            gear.position.set(2.1, 5.2, -2.4);
             gear.rotation.set(0, Math.PI, 0);
             gear.visible = false;
             gear.traverse(node => {
@@ -1307,45 +1417,8 @@ function refreshGearVisibility() {
     }
 }
 
-function fadeToAnimation(actionName, duration = 0.1) {
-    if (!mixer || !animationActions || !animationActions[actionName]) return;
-
-    const newAction = animationActions[actionName];
-    const currentActiveAction = animationActions[currentActionName];
-
-    if (currentActiveAction === newAction) {
-        if (!newAction.enabled || newAction.weight < 0.99) {
-            newAction.enabled = true;
-            newAction.setEffectiveWeight(1);
-            newAction.play();
-        }
-        return;
-    }
-
-    if (currentActiveAction) {
-        currentActiveAction.fadeOut(duration);
-    }
-
-    newAction.reset();
-    newAction.enabled = true;
-    newAction.setEffectiveWeight(1);
-    newAction.fadeIn(duration);
-    newAction.play();
-
-    if (newAction === animationActions.walk) {
-        newAction.setEffectiveTimeScale(WALK_ANIM_SPEED);
-    } else {
-        newAction.setEffectiveTimeScale(1);
-    }
-
-    if (newAction === animationActions.jump) {
-        newAction.setLoop(THREE.LoopOnce);
-        newAction.clampWhenFinished = true;
-    } else {
-        newAction.setLoop(THREE.LoopRepeat);
-        newAction.clampWhenFinished = false;
-    }
-
+function fadeToAnimation(actionName) {
+    animState = actionName;
     currentActionName = actionName;
 }
 
@@ -1517,7 +1590,7 @@ function resolveCollider(box) {
             grounded = true;
             if (isJumping) {
                 isJumping = false;
-                if (animationActions.idle) fadeToAnimation('idle', 0.1);
+                fadeToAnimation('idle');
             }
         } else if (velocity.y > 0 && py + CHARACTER_HEIGHT <= box.min.y + epsilon) {
             character.position.y = box.min.y - CHARACTER_HEIGHT;
@@ -1612,8 +1685,8 @@ function animate(currentTime) {
 
     const delta = Math.min(clock.getDelta(), 0.1);
 
-    if (mixer && character.visible) {
-        mixer.update(delta);
+    if (characterParts && character.visible) {
+        updateCharacterAnimation(delta);
     }
 
     velocity.y += GRAVITY * delta;
@@ -1656,20 +1729,19 @@ function animate(currentTime) {
         if (jumpSound) {
             playSound(jumpSound, false, 0.5);
         }
-        if (animationActions.jump) {
-            fadeToAnimation('jump', 0.1);
-            fadeToAnimation('fall', 0.6);
-        }
+        fadeToAnimation('jump');
         jump = false;
     }
 
     if (!isFalling) {
-        if (!isJumping) {
-            if (isMovingHorizontally) {
-                fadeToAnimation('walk', 0.2);
-            } else {
-                fadeToAnimation('idle', 0.2);
-            }
+        if (isJumping) {
+            fadeToAnimation(velocity.y > 0 ? 'jump' : 'fall');
+        } else if (!isOnGround) {
+            fadeToAnimation('fall');
+        } else if (isMovingHorizontally) {
+            fadeToAnimation('walk');
+        } else {
+            fadeToAnimation('idle');
         }
     }
 
@@ -1711,7 +1783,7 @@ function animate(currentTime) {
     if (!isFalling) {
         checkBlockCollisions();
     } else {
-        fadeToAnimation('fall', 0.2);
+        fadeToAnimation('fall');
     }
 
     if (isRespawning) {
@@ -1731,7 +1803,7 @@ function animate(currentTime) {
             isMovingHorizontally = false;
             if (deathSound) playSound(deathSound, false, 1.0);
             stopWalkSound();
-            if (mixer && animationActions.idle) fadeToAnimation('idle', 0);
+            fadeToAnimation('idle');
             toggleHomeMenu();
         }
     } else if (isFalling) {
@@ -1744,7 +1816,7 @@ function animate(currentTime) {
             if (characterModel) characterModel.visible = false;
             if (deathSound) playSound(deathSound, false, 1.0);
             stopWalkSound();
-            if (mixer && animationActions.idle) fadeToAnimation('idle', 0);
+            fadeToAnimation('idle');
             toggleHomeMenu();
         }
     }
@@ -1794,7 +1866,7 @@ function resetCharacter() {
     thumbstickVector.set(0, 0);
     if (deathSound) playSound(deathSound, false, 1.0);
     stopWalkSound();
-    if (mixer && animationActions.idle) fadeToAnimation('idle', 0);
+    fadeToAnimation('idle');
     toggleHomeMenu();
 }
 
@@ -2067,24 +2139,6 @@ function toggleInventoryMenu() {
     }
 }
 
-function tweenToolWeightDown(action, duration) {
-    const token = ++toolTweenToken;
-    const startWeight = action.getEffectiveWeight();
-    const startTime = performance.now();
-
-    function step() {
-        if (token !== toolTweenToken) return;
-        const t = Math.min((performance.now() - startTime) / (duration * 1000), 1);
-        action.setEffectiveWeight(startWeight * (1 - t));
-        if (t < 1) {
-            requestAnimationFrame(step);
-        } else {
-            action.stop();
-        }
-    }
-    step();
-}
-
 function updateHotbarUI() {
     for (let i = 1; i <= HOTBAR_SLOTS; i++) {
         const slot = document.getElementById(`hotbarSlot-${i}`);
@@ -2093,17 +2147,7 @@ function updateHotbarUI() {
         }
     }
 
-    const toolAction = animationActions.tool;
-    if (activeHotbarSlot > 0 && activeHotbarSlot <= hotbarItems.length) {
-        if (toolAction) {
-            toolTweenToken++;
-            toolAction.reset();
-            toolAction.setEffectiveWeight(40);
-            toolAction.play();
-        }
-    } else if (toolAction && (toolAction.isRunning() || toolAction.getEffectiveWeight() !== 0)) {
-        tweenToolWeightDown(toolAction, 0.3);
-    }
+    toolHeld = activeHotbarSlot > 0 && activeHotbarSlot <= hotbarItems.length;
 
     refreshGearVisibility();
     updateCursor();
