@@ -840,7 +840,9 @@ const SPEED = 16.0;
 const ROTATION_SPEED = 0.2;
 const CHARACTER_HALF_WIDTH = 0.8;
 const CHARACTER_HEIGHT = 7;
-const WALK_CYCLE_SPEED = 10;
+const WALK_CYCLE_SPEED = 12;
+const SUN_SKY_DISTANCE = 80000;
+const SUN_ANGULAR_SIZE = 21;
 const CHARACTER_SCALE = CHARACTER_HEIGHT / 5;
 const HOTBAR_SLOTS = 9;
 const FALL_DURATION = 7000;
@@ -857,6 +859,7 @@ const RIGHT = new THREE.Vector3(1, 0, 0);
 
 let scene, camera, renderer, character, characterModel, sun;
 let characterParts = null;
+let sunSprite = null;
 let animState = 'idle';
 let toolHeld = false;
 let animTime = 0;
@@ -903,7 +906,6 @@ let selectionBoxHelper = null;
 let sceneObjects = new Map();
 let partCounter = 0;
 let colliders = [];
-let baseplateCollider = null;
 let studTexture, bottomTexture;
 let maxAnisotropy = 1;
 let shadowTexelSize = (SHADOW_RANGE * 2) / 2048;
@@ -1043,12 +1045,11 @@ function init() {
 
     createBaseplate(scene);
 
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.5, 100000);
+    camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.5, 100000);
 
-    const hemisphere = new THREE.HemisphereLight(0xffffff, 0x8a8f99, 0.55);
-    scene.add(hemisphere);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.58));
 
-    sun = new THREE.DirectionalLight(0xfffaf0, 0.6);
+    sun = new THREE.DirectionalLight(0xffffff, 0.9);
     sun.castShadow = true;
     sun.shadow.mapSize.set(isTouchDevice ? 1024 : 2048, isTouchDevice ? 1024 : 2048);
     sun.shadow.camera.near = 1;
@@ -1064,6 +1065,7 @@ function init() {
     sun.position.copy(lightDir).multiplyScalar(SUN_DISTANCE);
     scene.add(sun);
     scene.add(sun.target);
+    createSunSprite();
 
     const loadWait = setInterval(() => {
         if (window.loadingFinished) {
@@ -1218,26 +1220,62 @@ const CHARACTER_COLORS = { head: 0xF5CD30, torso: 0x0D69AC, arms: 0xF5CD30, legs
 function createFaceTexture() {
     const canvas = document.createElement('canvas');
     canvas.width = 1024;
-    canvas.height = 256;
+    canvas.height = 300;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, 1024, 256);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.anisotropy = maxAnisotropy;
+
+    const drawBase = () => {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, 1024, 300);
+    };
+
+    drawBase();
     ctx.fillStyle = '#000000';
     ctx.beginPath();
-    ctx.ellipse(467, 100, 11, 19, 0, 0, Math.PI * 2);
+    ctx.ellipse(470, 118, 12, 21, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.beginPath();
-    ctx.ellipse(557, 100, 11, 19, 0, 0, Math.PI * 2);
+    ctx.ellipse(554, 118, 12, 21, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 9;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.arc(512, 118, 62, Math.PI * 0.2, Math.PI * 0.8);
+    ctx.arc(512, 140, 62, Math.PI * 0.2, Math.PI * 0.8);
     ctx.stroke();
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.anisotropy = maxAnisotropy;
+
+    const image = new Image();
+    image.onload = () => {
+        drawBase();
+        ctx.drawImage(image, 512 - 150, 0, 300, 300);
+        texture.needsUpdate = true;
+    };
+    image.src = 'face.png';
     return texture;
+}
+
+function createSunSprite() {
+    new THREE.TextureLoader().load('sun.png', (texture) => {
+        const size = 2 * SUN_SKY_DISTANCE * Math.tan(THREE.MathUtils.degToRad(SUN_ANGULAR_SIZE / 2));
+        const material = new THREE.SpriteMaterial({
+            map: texture,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            fog: false
+        });
+        sunSprite = new THREE.Sprite(material);
+        sunSprite.scale.set(size, size, 1);
+        sunSprite.frustumCulled = false;
+        sunSprite.renderOrder = -1;
+        scene.add(sunSprite);
+    });
+}
+
+function updateSunSprite() {
+    if (!sunSprite) return;
+    sunSprite.position.copy(camera.position).addScaledVector(lightDir, SUN_SKY_DISTANCE);
 }
 
 function createRoundedBoxGeometry(width, height, depth, radius, segments) {
@@ -1272,16 +1310,15 @@ function createRoundedBoxGeometry(width, height, depth, radius, segments) {
 }
 
 function createHeadGeometry() {
-    const height = 1;
-    const bottomRadius = 0.58;
-    const topRadius = 0.58;
-    const bottomRound = 0.15;
-    const topRound = 0.26;
-    const steps = 10;
+    const height = 1.1;
+    const radius = 0.6;
+    const bottomRound = 0.2;
+    const topRound = 0.27;
+    const steps = 14;
     const points = [];
-    const bcx = bottomRadius - bottomRound;
+    const bcx = radius - bottomRound;
     const bcy = -height / 2 + bottomRound;
-    const tcx = topRadius - topRound;
+    const tcx = radius - topRound;
     const tcy = height / 2 - topRound;
 
     points.push(new THREE.Vector2(0, -height / 2));
@@ -1290,15 +1327,15 @@ function createHeadGeometry() {
         const a = (i / steps) * Math.PI / 2;
         points.push(new THREE.Vector2(bcx + Math.sin(a) * bottomRound, bcy - Math.cos(a) * bottomRound));
     }
-    points.push(new THREE.Vector2((bottomRadius + topRadius) / 2, (bcy + tcy) / 2));
+    points.push(new THREE.Vector2(radius, (bcy + tcy) / 2));
     for (let i = 0; i <= steps; i++) {
         const a = (i / steps) * Math.PI / 2;
         points.push(new THREE.Vector2(tcx + Math.cos(a) * topRound, tcy + Math.sin(a) * topRound));
     }
-    points.push(new THREE.Vector2(tcx * 0.5, height / 2));
-    points.push(new THREE.Vector2(0, height / 2));
+    points.push(new THREE.Vector2(tcx * 0.5, height / 2 + 0.012));
+    points.push(new THREE.Vector2(0, height / 2 + 0.025));
 
-    const geometry = new THREE.LatheGeometry(points, 48);
+    const geometry = new THREE.LatheGeometry(points, 64);
     const position = geometry.attributes.position;
     const uv = geometry.attributes.uv;
     for (let i = 0; i < uv.count; i++) {
@@ -1326,7 +1363,7 @@ function buildCharacterModel() {
     };
 
     const makeBox = (name, width, height, depth, color, offsetY, parent) => {
-        const mesh = new THREE.Mesh(createRoundedBoxGeometry(width, height, depth, 0.14, 4), makeMaterial(color));
+        const mesh = new THREE.Mesh(createRoundedBoxGeometry(width, height, depth, 0.07, 3), makeMaterial(color));
         mesh.name = name;
         mesh.position.y = offsetY;
         mesh.castShadow = true;
@@ -1337,8 +1374,8 @@ function buildCharacterModel() {
     };
 
     makeBox('torso', 2, 2, 1, CHARACTER_COLORS.torso, 3, root);
-    makeBox('rightArm', 1, 2, 1, CHARACTER_COLORS.arms, -1, makeJoint('rightArmJoint', 1.5, 4));
-    makeBox('leftArm', 1, 2, 1, CHARACTER_COLORS.arms, -1, makeJoint('leftArmJoint', -1.5, 4));
+    makeBox('rightArm', 1, 2, 1, CHARACTER_COLORS.arms, -0.5, makeJoint('rightArmJoint', 1.5, 3.5));
+    makeBox('leftArm', 1, 2, 1, CHARACTER_COLORS.arms, -0.5, makeJoint('leftArmJoint', -1.5, 3.5));
     makeBox('rightLeg', 1, 2, 1, CHARACTER_COLORS.legs, -1, makeJoint('rightLegJoint', 0.5, 2));
     makeBox('leftLeg', 1, 2, 1, CHARACTER_COLORS.legs, -1, makeJoint('leftLegJoint', -0.5, 2));
 
@@ -1427,21 +1464,21 @@ function updateCharacterAnimation(delta) {
         rArmX = -s * 0.95;
         lArmX = s * 0.95;
     } else if (animState === 'jump') {
-        rArmZ = 2.6;
-        lArmZ = -2.6;
-        rLegX = 0.1;
-        lLegX = -0.1;
+        const w = Math.sin(animTime * 7);
+        rArmX = Math.PI * 0.9;
+        lArmX = Math.PI * 0.9;
+        rArmZ = 0;
+        lArmZ = 0;
+        rLegX = 0.3 + w * 0.12;
+        lLegX = -0.22 - w * 0.12;
     } else if (animState === 'fall') {
-        rArmZ = 1.7;
-        lArmZ = -1.7;
-        rLegX = 0.1;
-        lLegX = -0.2;
-        rLegZ = 0.15;
-        lLegZ = -0.15;
-    } else {
-        const breathe = Math.sin(animTime * 1.8) * 0.03;
-        rArmZ += breathe;
-        lArmZ -= breathe;
+        const w = Math.sin(animTime * 9);
+        rArmX = Math.PI * 0.9 + w * 0.08;
+        lArmX = Math.PI * 0.9 - w * 0.08;
+        rArmZ = 0;
+        lArmZ = 0;
+        rLegX = 0.3 + w * 0.3;
+        lLegX = -0.3 - w * 0.3;
     }
 
     if (toolHeld) {
@@ -1471,7 +1508,7 @@ function loadGears() {
             const gear = gltf.scene;
             gear.name = def.name;
             gear.scale.setScalar(def.scale);
-            gear.position.set(2.1, 5.2, -2.4);
+            gear.position.set(2.1, 4.5, -1.7);
             gear.rotation.set(0, Math.PI, 0);
             gear.visible = false;
             gear.traverse(node => {
@@ -1646,58 +1683,150 @@ function updateCameraPosition() {
     camera.lookAt(tmpVec);
 }
 
-function resolveCollider(box) {
+const COLLISION_STEP = 0.6;
+const COLLISION_EPSILON = 0.0005;
+const collisionHalf = new THREE.Vector3(CHARACTER_HALF_WIDTH, CHARACTER_HEIGHT / 2, CHARACTER_HALF_WIDTH);
+const worldAxes = [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
+const satAxis = new THREE.Vector3();
+const satBestAxis = new THREE.Vector3();
+const satDelta = new THREE.Vector3();
+const satCenter = new THREE.Vector3();
+const colliderBox = new THREE.Box3();
+const colliderSize = new THREE.Vector3();
+const nearbyColliders = [];
+let satDepth = 0;
+
+function updateCollider(c) {
+    const mesh = c.mesh;
+    mesh.updateMatrixWorld(true);
+    const geometry = mesh.geometry;
+    if (mesh.userData.rbxClass === 'Part' && geometry && geometry.parameters && geometry.parameters.width !== undefined) {
+        const e = mesh.matrixWorld.elements;
+        c.axes[0].set(e[0], e[1], e[2]);
+        c.axes[1].set(e[4], e[5], e[6]);
+        c.axes[2].set(e[8], e[9], e[10]);
+        const sx = c.axes[0].length() || 1;
+        const sy = c.axes[1].length() || 1;
+        const sz = c.axes[2].length() || 1;
+        c.axes[0].divideScalar(sx);
+        c.axes[1].divideScalar(sy);
+        c.axes[2].divideScalar(sz);
+        c.half[0] = geometry.parameters.width / 2 * sx;
+        c.half[1] = geometry.parameters.height / 2 * sy;
+        c.half[2] = geometry.parameters.depth / 2 * sz;
+        c.center.setFromMatrixPosition(mesh.matrixWorld);
+    } else {
+        colliderBox.setFromObject(mesh);
+        if (colliderBox.isEmpty()) {
+            c.half[0] = c.half[1] = c.half[2] = 0;
+            c.center.set(0, -100000, 0);
+        } else {
+            colliderBox.getCenter(c.center);
+            colliderBox.getSize(colliderSize);
+            c.half[0] = colliderSize.x / 2;
+            c.half[1] = colliderSize.y / 2;
+            c.half[2] = colliderSize.z / 2;
+        }
+        c.axes[0].set(1, 0, 0);
+        c.axes[1].set(0, 1, 0);
+        c.axes[2].set(0, 0, 1);
+    }
+    const ex = Math.abs(c.axes[0].x) * c.half[0] + Math.abs(c.axes[1].x) * c.half[1] + Math.abs(c.axes[2].x) * c.half[2];
+    const ey = Math.abs(c.axes[0].y) * c.half[0] + Math.abs(c.axes[1].y) * c.half[1] + Math.abs(c.axes[2].y) * c.half[2];
+    const ez = Math.abs(c.axes[0].z) * c.half[0] + Math.abs(c.axes[1].z) * c.half[1] + Math.abs(c.axes[2].z) * c.half[2];
+    c.min.set(c.center.x - ex, c.center.y - ey, c.center.z - ez);
+    c.max.set(c.center.x + ex, c.center.y + ey, c.center.z + ez);
+}
+
+function testSatAxis(c, axis) {
+    const length = axis.length();
+    if (length < 1e-5) return true;
+    axis.divideScalar(length);
+    const rA = collisionHalf.x * Math.abs(axis.x) + collisionHalf.y * Math.abs(axis.y) + collisionHalf.z * Math.abs(axis.z);
+    const rB = c.half[0] * Math.abs(axis.dot(c.axes[0])) +
+        c.half[1] * Math.abs(axis.dot(c.axes[1])) +
+        c.half[2] * Math.abs(axis.dot(c.axes[2]));
+    const distance = satDelta.dot(axis);
+    const overlap = rA + rB - Math.abs(distance);
+    if (overlap <= COLLISION_EPSILON) return false;
+    if (overlap < satDepth) {
+        satDepth = overlap;
+        satBestAxis.copy(axis);
+        if (distance < 0) satBestAxis.negate();
+    }
+    return true;
+}
+
+function characterVersusCollider(c) {
+    satDelta.subVectors(satCenter, c.center);
+    satDepth = Infinity;
+    for (let i = 0; i < 3; i++) {
+        if (!testSatAxis(c, satAxis.copy(worldAxes[i]))) return false;
+    }
+    for (let i = 0; i < 3; i++) {
+        if (!testSatAxis(c, satAxis.copy(c.axes[i]))) return false;
+    }
+    for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+            if (!testSatAxis(c, satAxis.crossVectors(worldAxes[i], c.axes[j]))) return false;
+        }
+    }
+    return satDepth < Infinity;
+}
+
+function moveAndCollide(dx, dy, dz) {
+    const maxMove = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+    const steps = Math.min(64, Math.max(1, Math.ceil(maxMove / COLLISION_STEP)));
     const px = character.position.x;
     const py = character.position.y;
     const pz = character.position.z;
-    charBox.min.set(px - CHARACTER_HALF_WIDTH, py, pz - CHARACTER_HALF_WIDTH);
-    charBox.max.set(px + CHARACTER_HALF_WIDTH, py + CHARACTER_HEIGHT, pz + CHARACTER_HALF_WIDTH);
+    const minX = Math.min(px, px + dx) - CHARACTER_HALF_WIDTH - 1;
+    const maxX = Math.max(px, px + dx) + CHARACTER_HALF_WIDTH + 1;
+    const minY = Math.min(py, py + dy) - 1;
+    const maxY = Math.max(py, py + dy) + CHARACTER_HEIGHT + 1;
+    const minZ = Math.min(pz, pz + dz) - CHARACTER_HALF_WIDTH - 1;
+    const maxZ = Math.max(pz, pz + dz) + CHARACTER_HALF_WIDTH + 1;
 
-    if (!box.intersectsBox(charBox)) return false;
-
-    const overlapX = Math.min(charBox.max.x, box.max.x) - Math.max(charBox.min.x, box.min.x);
-    const overlapY = Math.min(charBox.max.y, box.max.y) - Math.max(charBox.min.y, box.min.y);
-    const overlapZ = Math.min(charBox.max.z, box.max.z) - Math.max(charBox.min.z, box.min.z);
-    const minOverlap = Math.min(overlapX, overlapY, overlapZ);
-    const epsilon = 0.005;
-    let grounded = false;
-
-    if (minOverlap === overlapY) {
-        if (velocity.y <= 0 && py >= box.max.y - CHARACTER_HEIGHT - epsilon) {
-            character.position.y = box.max.y;
-            velocity.y = 0;
-            grounded = true;
-            if (isJumping) {
-                isJumping = false;
-                fadeToAnimation('idle');
-            }
-        } else if (velocity.y > 0 && py + CHARACTER_HEIGHT <= box.min.y + epsilon) {
-            character.position.y = box.min.y - CHARACTER_HEIGHT;
-            velocity.y = 0;
-        }
-    } else if (minOverlap === overlapX) {
-        if (px < (box.min.x + box.max.x) * 0.5) {
-            character.position.x -= overlapX;
-        } else {
-            character.position.x += overlapX;
-        }
-        horizontalVelocityX = 0;
-    } else {
-        if (pz < (box.min.z + box.max.z) * 0.5) {
-            character.position.z -= overlapZ;
-        } else {
-            character.position.z += overlapZ;
-        }
-        horizontalVelocityZ = 0;
-    }
-    return grounded;
-}
-
-function checkBlockCollisions() {
-    let grounded = false;
-    if (baseplateCollider && resolveCollider(baseplateCollider)) grounded = true;
+    nearbyColliders.length = 0;
     for (let i = 0; i < colliders.length; i++) {
-        if (resolveCollider(colliders[i].box)) grounded = true;
+        const c = colliders[i];
+        if (c.max.x >= minX && c.min.x <= maxX && c.max.y >= minY && c.min.y <= maxY && c.max.z >= minZ && c.min.z <= maxZ) {
+            nearbyColliders.push(c);
+        }
+    }
+
+    let grounded = false;
+    const stepX = dx / steps;
+    const stepY = dy / steps;
+    const stepZ = dz / steps;
+
+    for (let step = 0; step < steps; step++) {
+        character.position.x += stepX;
+        character.position.y += stepY;
+        character.position.z += stepZ;
+
+        for (let pass = 0; pass < 3; pass++) {
+            let pushed = false;
+            satCenter.set(character.position.x, character.position.y + CHARACTER_HEIGHT / 2, character.position.z);
+            for (let i = 0; i < nearbyColliders.length; i++) {
+                if (!characterVersusCollider(nearbyColliders[i])) continue;
+                character.position.addScaledVector(satBestAxis, satDepth);
+                satCenter.addScaledVector(satBestAxis, satDepth);
+                pushed = true;
+                if (satBestAxis.y > 0.5) {
+                    if (velocity.y < 0) velocity.y = 0;
+                    grounded = true;
+                } else if (satBestAxis.y < -0.5 && velocity.y > 0) {
+                    velocity.y = 0;
+                }
+            }
+            if (!pushed) break;
+        }
+    }
+
+    if (grounded && isJumping) {
+        isJumping = false;
+        fadeToAnimation('idle');
     }
     isOnGround = grounded && !isJumping;
 }
@@ -1708,7 +1837,17 @@ function registerColliders(object) {
     object.traverse(node => {
         if (node.isMesh) {
             meshes.push(node);
-            colliders.push({ owner: object, mesh: node, box: new THREE.Box3().setFromObject(node) });
+            const collider = {
+                owner: object,
+                mesh: node,
+                center: new THREE.Vector3(),
+                axes: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()],
+                half: [0, 0, 0],
+                min: new THREE.Vector3(),
+                max: new THREE.Vector3()
+            };
+            updateCollider(collider);
+            colliders.push(collider);
         }
     });
     object.userData.meshes = meshes;
@@ -1719,7 +1858,7 @@ function refreshColliders(object) {
     object.updateMatrixWorld(true);
     for (let i = 0; i < colliders.length; i++) {
         if (colliders[i].owner === object) {
-            colliders[i].box.setFromObject(colliders[i].mesh);
+            updateCollider(colliders[i]);
         }
     }
 }
@@ -1837,9 +1976,13 @@ function animate(currentTime) {
         stopWalkSound();
     }
 
-    character.position.x += horizontalVelocityX * delta;
-    character.position.z += horizontalVelocityZ * delta;
-    character.position.y += velocity.y * delta;
+    if (isFalling) {
+        character.position.x += horizontalVelocityX * delta;
+        character.position.z += horizontalVelocityZ * delta;
+        character.position.y += velocity.y * delta;
+    } else {
+        moveAndCollide(horizontalVelocityX * delta, velocity.y * delta, horizontalVelocityZ * delta);
+    }
 
     if (currentChatBubble) {
         updateChatBubblePosition();
@@ -1859,9 +2002,7 @@ function animate(currentTime) {
         horizontalVelocityZ = 0;
     }
 
-    if (!isFalling) {
-        checkBlockCollisions();
-    } else {
+    if (isFalling) {
         fadeToAnimation('fall');
     }
 
@@ -1914,6 +2055,7 @@ function animate(currentTime) {
     }
 
     updateCameraPosition();
+    updateSunSprite();
     renderer.render(scene, camera);
 }
 
